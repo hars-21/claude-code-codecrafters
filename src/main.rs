@@ -127,6 +127,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "tool_call_id": tool_call_id,
                             "content": format!("Successfully write {} to {}", content, path)
                         }));
+                    } else {
+                        panic!("file_path must be a string")
                     }
                 }
 
