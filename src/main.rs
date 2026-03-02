@@ -119,16 +119,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 "Write" => {
-                    if let Value::String(path) = &args["file_path"] {
-                        let content = fs::read_to_string(path).unwrap();
-                        std::fs::write(path, &content)?;
+                    if let (Value::String(path), Value::String(content)) =
+                        (&args["file_path"], &args["content"])
+                    {
+                        std::fs::write(path, content)?;
                         messages.push(json!({
                             "role": "tool",
                             "tool_call_id": tool_call_id,
                             "content": format!("Successfully write {} to {}", content, path)
                         }));
                     } else {
-                        panic!("file_path must be a string")
+                        panic!("file_path and content must be strings")
                     }
                 }
 
