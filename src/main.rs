@@ -1,7 +1,7 @@
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
 use serde_json::{Value, json};
-use std::{env, process};
+use std::{env, fs, process};
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -28,49 +28,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Client::with_config(config);
 
-    #[allow(unused_variables)]
-    let response: Value = client
-        .chat()
-        .create_byot(json!({
-            "model": "anthropic/claude-haiku-4.5",
-            "messages": [{"role": "user", "content": args.prompt}],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "Read",
-                    "description": "Read and return the contents of a file",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "The path to the file to read"
-                            }
-                        },
-                        "required": ["file_path"]
+    let mut messages: Vec<Value> = Vec::new();
+    messages.push(json!({
+            "role": "user",
+            "content": args.prompt
+        }
+    ));
+    for _ in 0..10 {
+        #[allow(unused_variables)]
+        let response: Value = client
+            .chat()
+            .create_byot(json!({
+                "model": "anthropic/claude-haiku-4.5",
+                "messages": messages,
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "description": "Read and return the contents of a file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "file_path": {
+                                    "type": "string",
+                                    "description": "The path to the file to read"
+                                }
+                            },
+                            "required": ["file_path"]
+                        }
+                    }
+                }]
+            }))
+            .await?;
+
+        if let Some(tools) = response["choices"][0]["message"]["tool_calls"].as_array()
+            && !tools.is_empty()
+        {
+            messages.push(response["choices"][0]["message"].clone());
+            let tool_call = match &tools[0]["function"] {
+                Value::Object(tool) => tool,
+                _ => panic!("Invalid tool call"),
+            };
+            let tool_call_id = match &tools[0]["id"] {
+                Value::String(id) => id,
+                _ => panic!("Tool call id not provided or not string"),
+            };
+            let tool = match &tool_call["name"] {
+                Value::String(name) => name,
+                _ => panic!("Tool name must be a string"),
+            };
+            let args: Value = match &tool_call["arguments"] {
+                Value::String(raw) => serde_json::from_str(raw.as_str()).unwrap(),
+                _ => panic!("Invalid arguments"),
+            };
+            match tool.as_str() {
+                "Read" => {
+                    if let Value::String(path) = &args["file_path"] {
+                        let content = fs::read_to_string(path).unwrap();
+                        messages.push(json!({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": content,
+                        }))
+                    } else {
+                        panic!("file_path must be a string")
                     }
                 }
-            }]
-        }))
-        .await?;
-
-    eprintln!("Logs from your program will appear here!");
-
-    let message = &response["choices"][0]["message"];
-
-    if let Some(tool_calls) = message["tool_calls"].as_array() {
-        let tool_call = &tool_calls[0];
-        let name = tool_call["function"]["name"].as_str().unwrap();
-        let arguments: Value =
-            serde_json::from_str(tool_call["function"]["arguments"].as_str().unwrap())?;
-
-        if name == "Read" {
-            let file_path = arguments["file_path"].as_str().unwrap();
-            let contents = std::fs::read_to_string(file_path)?;
-            print!("{}", contents);
+                _ => panic!("Tool not implemented"),
+            };
+        } else {
+            if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
+                println!("{}", content);
+                break;
+            }
         }
-    } else if let Some(content) = message["content"].as_str() {
-        println!("{}", content);
     }
 
     Ok(())
