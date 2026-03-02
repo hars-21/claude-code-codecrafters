@@ -1,6 +1,7 @@
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
 use serde_json::{Value, json};
+use std::process::{Command, Stdio};
 use std::{env, fs, process};
 
 #[derive(Parser)]
@@ -39,32 +40,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let response: Value = client
             .chat()
             .create_byot(json!({
-                        "model": "anthropic/claude-haiku-4.5",
-                        "messages": messages,
-                        "tools": [
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "Read",
-                                "description": "Read and return the contents of a file",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "file_path": {
-                                            "type": "string",
-                                            "description": "The path to the file to read"
-                                        }
-                                    },
-                                    "required": ["file_path"]
-                                }
+                    "model": "anthropic/claude-haiku-4.5",
+                    "messages": messages,
+                    "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "Read",
+                            "description": "Read and return the contents of a file",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "file_path": {
+                                        "type": "string",
+                                        "description": "The path to the file to read"
+                                    }
+                                },
+                                "required": ["file_path"]
                             }
-                        },
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "Write",
-                                "description": "Write content to a file",
-                                "parameters": {
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "Write",
+                            "description": "Write content to a file",
+                            "parameters": {
                                 "type": "object",
                                 "required": ["file_path", "content"],
                                 "properties": {
@@ -75,6 +76,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     "content": {
                                         "type": "string",
                                         "description": "The content to write to the file"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "Bash",
+                            "description": "Execute a shell command",
+                            "parameters": {
+                                "type": "object",
+                                "required": ["command"],
+                                "properties": {
+                                    "command": {
+                                        "type": "string",
+                                        "description": "The command to execute"
                                     }
                                 }
                             }
@@ -128,6 +146,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "tool_call_id": tool_call_id,
                             "content": format!("Successfully write {} to {}", content, path)
                         }));
+                    } else {
+                        panic!("file_path and content must be strings")
+                    }
+                }
+
+                "Bash" => {
+                    if let Value::String(command) = &args["command"] {
+                        if command.len() == 0 {
+                            messages.push(json!({
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": "There is no command to execute!!!"
+                            }));
+                        }
+                        let args: Vec<_> = command.split_whitespace().collect();
+                        let (cmd, args) = args.split_at(1);
+                        let output = Command::new(cmd[0])
+                            .args(args)
+                            .stdin(Stdio::piped())
+                            .stdout(Stdio::piped())
+                            .output()?;
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+
+                        if !stdout.is_empty() {
+                            messages.push(json!({
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": stdout
+                            }));
+                        } else {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            messages.push(json!({
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": stderr
+                            }));
+                        }
                     } else {
                         panic!("file_path and content must be strings")
                     }
