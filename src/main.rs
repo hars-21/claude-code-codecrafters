@@ -54,11 +54,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .await?;
 
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
     eprintln!("Logs from your program will appear here!");
 
-    // TODO: Uncomment the lines below to pass the first stage
-    if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
+    let message = &response["choices"][0]["message"];
+
+    if let Some(tool_calls) = message["tool_calls"].as_array() {
+        let tool_call = &tool_calls[0];
+        let name = tool_call["function"]["name"].as_str().unwrap();
+        let arguments: Value =
+            serde_json::from_str(tool_call["function"]["arguments"].as_str().unwrap())?;
+
+        if name == "Read" {
+            let file_path = arguments["file_path"].as_str().unwrap();
+            let contents = std::fs::read_to_string(file_path)?;
+            print!("{}", contents);
+        }
+    } else if let Some(content) = message["content"].as_str() {
         println!("{}", content);
     }
 
