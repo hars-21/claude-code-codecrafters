@@ -11,6 +11,21 @@ struct Args {
     prompt: String,
 }
 
+fn read_frontmatter(content: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next()? != "---" {
+        return None;
+    }
+
+    let frontmatter: Vec<&str> = lines.take_while(|line| *line != "---").collect();
+
+    if frontmatter.is_empty() {
+        return None;
+    }
+
+    Some(frontmatter.join("\n"))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -27,9 +42,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_api_base(base_url)
         .with_api_key(api_key);
 
+    let skill_dirs = fs::read_dir(".claude/skills/")?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.path().to_string_lossy().to_string());
+
+    let mut skills = Vec::new();
+    for skill_dir in skill_dirs {
+        let skill_path = format!("{}/SKILL.md", skill_dir);
+        if let Ok(readme_content) = fs::read_to_string(&skill_path) {
+            if let Some(frontmatter) = read_frontmatter(&readme_content) {
+                skills.push(frontmatter);
+            }
+        }
+    }
+
     let client = Client::with_config(config);
 
     let mut messages: Vec<Value> = Vec::new();
+
+    messages.push(json!({
+        "role": "system",
+        "content": "You have access to the following skills:\n\n".to_string() + &skills.join("\n\n")
+    }));
+
     messages.push(json!({
             "role": "user",
             "content": args.prompt
