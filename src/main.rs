@@ -1,6 +1,8 @@
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
+use serde::Deserialize;
 use serde_json::{Value, json};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::{env, fs, process};
 
@@ -11,19 +13,61 @@ struct Args {
     prompt: String,
 }
 
-fn read_frontmatter(content: &str) -> Option<String> {
+#[derive(Deserialize)]
+struct SkillFrontmatter {
+    name: String,
+    description: String,
+}
+
+fn read_frontmatter(content: &str) -> Result<Option<SkillFrontmatter>, serde_yaml::Error> {
     let mut lines = content.lines();
-    if lines.next()? != "---" {
-        return None;
+    let Some(first_line) = lines.next() else {
+        return Ok(None);
+    };
+
+    if first_line.trim_start_matches('\u{feff}') != "---" {
+        return Ok(None);
     }
 
-    let frontmatter: Vec<&str> = lines.take_while(|line| *line != "---").collect();
-
-    if frontmatter.is_empty() {
-        return None;
+    let mut frontmatter = Vec::new();
+    let mut found_closing_delimiter = false;
+    for line in lines {
+        if line == "---" {
+            found_closing_delimiter = true;
+            break;
+        }
+        frontmatter.push(line);
     }
 
-    Some(frontmatter.join("\n"))
+    if !found_closing_delimiter || frontmatter.is_empty() {
+        return Ok(None);
+    }
+
+    serde_yaml::from_str(&frontmatter.join("\n")).map(Some)
+}
+
+fn load_skills() -> Result<String, Box<dyn std::error::Error>> {
+    let skills_path = Path::new(".claude/skills");
+    let mut skills = String::new();
+
+    if !skills_path.is_dir() {
+        return Ok(skills);
+    }
+
+    for entry in fs::read_dir(skills_path)? {
+        let filename = entry?.path().join("SKILL.md");
+        if !filename.is_file() {
+            continue;
+        }
+
+        let contents = fs::read_to_string(&filename)?;
+        let skill = read_frontmatter(&contents)?
+            .ok_or_else(|| format!("Frontmatter missing from {}", filename.display()))?;
+
+        skills.push_str(&format!("- {}: {}\n", skill.name, skill.description));
+    }
+
+    Ok(skills)
 }
 
 #[tokio::main]
@@ -42,20 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_api_base(base_url)
         .with_api_key(api_key);
 
-    let skill_dirs = fs::read_dir(".claude/skills/")?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.path().to_string_lossy().to_string());
-
-    let mut skills = Vec::new();
-    for skill_dir in skill_dirs {
-        let skill_path = format!("{}/SKILL.md", skill_dir);
-        if let Ok(readme_content) = fs::read_to_string(&skill_path) {
-            if let Some(frontmatter) = read_frontmatter(&readme_content) {
-                skills.push(frontmatter);
-            }
-        }
-    }
+    let skills = load_skills()?;
 
     let client = Client::with_config(config);
 
@@ -63,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     messages.push(json!({
         "role": "system",
-        "content": "You have access to the following skills:\n\n".to_string() + &skills.join("\n\n")
+        "content": format!("You have access to the following skills:\n\n{skills}")
     }));
 
     messages.push(json!({
@@ -189,23 +220,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 "Bash" => {
                     if let Value::String(command) = &args["command"] {
-                        if command.len() == 0 {
+                        if command.trim().is_empty() {
                             messages.push(json!({
                                 "role": "tool",
                                 "tool_call_id": tool_call_id,
                                 "content": "There is no command to execute!!!"
                             }));
+                            // Skip execution for empty command
+                            continue;
                         }
-                        let args: Vec<_> = command.split_whitespace().collect();
-                        let (cmd, args) = args.split_at(1);
-                        let output = Command::new(cmd[0])
-                            .args(args)
-                            .stdin(Stdio::piped())
+                        // Execute the command using a shell to support complex commands and quoting
+                        let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+                        let output = Command::new(shell)
+                            .arg("-c")
+                            .arg(command)
+                            .stdin(Stdio::null())
                             .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
                             .output()?;
                         let stdout = String::from_utf8_lossy(&output.stdout);
 
-                        if !stdout.is_empty() {
+                        if !stdout.trim().is_empty() {
                             messages.push(json!({
                                 "role": "tool",
                                 "tool_call_id": tool_call_id,
@@ -220,7 +255,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }));
                         }
                     } else {
-                        panic!("file_path and content must be strings")
+                        panic!("command must be a string")
                     }
                 }
 
