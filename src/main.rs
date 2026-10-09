@@ -14,12 +14,14 @@ struct Args {
 }
 
 #[derive(Deserialize)]
-struct SkillFrontmatter {
+struct Skill {
     name: String,
     description: String,
+    #[serde(skip)]
+    body: String,
 }
 
-fn read_frontmatter(content: &str) -> Result<Option<SkillFrontmatter>, serde_yaml::Error> {
+fn read_skill(content: &str) -> Result<Option<Skill>, serde_yaml::Error> {
     let mut lines = content.lines();
     let Some(first_line) = lines.next() else {
         return Ok(None);
@@ -31,7 +33,7 @@ fn read_frontmatter(content: &str) -> Result<Option<SkillFrontmatter>, serde_yam
 
     let mut frontmatter = Vec::new();
     let mut found_closing_delimiter = false;
-    for line in lines {
+    for line in &mut lines {
         if line == "---" {
             found_closing_delimiter = true;
             break;
@@ -43,12 +45,15 @@ fn read_frontmatter(content: &str) -> Result<Option<SkillFrontmatter>, serde_yam
         return Ok(None);
     }
 
-    serde_yaml::from_str(&frontmatter.join("\n")).map(Some)
+    let mut skill: Skill = serde_yaml::from_str(&frontmatter.join("\n"))?;
+    skill.body = lines.collect::<Vec<_>>().join("\n");
+
+    Ok(Some(skill))
 }
 
-fn load_skills() -> Result<String, Box<dyn std::error::Error>> {
+fn load_skills() -> Result<Vec<Skill>, Box<dyn std::error::Error>> {
     let skills_path = Path::new(".claude/skills");
-    let mut skills = String::new();
+    let mut skills = Vec::new();
 
     if !skills_path.is_dir() {
         return Ok(skills);
@@ -61,10 +66,10 @@ fn load_skills() -> Result<String, Box<dyn std::error::Error>> {
         }
 
         let contents = fs::read_to_string(&filename)?;
-        let skill = read_frontmatter(&contents)?
+        let skill = read_skill(&contents)?
             .ok_or_else(|| format!("Frontmatter missing from {}", filename.display()))?;
 
-        skills.push_str(&format!("- {}: {}\n", skill.name, skill.description));
+        skills.push(skill);
     }
 
     Ok(skills)
@@ -73,6 +78,16 @@ fn load_skills() -> Result<String, Box<dyn std::error::Error>> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    let skills = load_skills()?;
+
+    if let Some(skill_name) = args.prompt.trim().strip_prefix('/') {
+        let skill = skills
+            .iter()
+            .find(|skill| skill.name == skill_name)
+            .ok_or_else(|| format!("Skill /{skill_name} not found"))?;
+        println!("{}", skill.body);
+        return Ok(());
+    }
 
     let base_url = env::var("OPENROUTER_BASE_URL")
         .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
@@ -86,7 +101,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_api_base(base_url)
         .with_api_key(api_key);
 
-    let skills = load_skills()?;
+    let skill_list = skills
+        .iter()
+        .map(|skill| format!("- {}: {}\n", skill.name, skill.description))
+        .collect::<String>();
 
     let client = Client::with_config(config);
 
@@ -94,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     messages.push(json!({
         "role": "system",
-        "content": format!("You have access to the following skills:\n\n{skills}")
+        "content": format!("You have access to the following skills:\n\n{skill_list}")
     }));
 
     messages.push(json!({
