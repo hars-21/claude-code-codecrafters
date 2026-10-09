@@ -80,15 +80,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let skills = load_skills()?;
 
-    if let Some(skill_name) = args.prompt.trim().strip_prefix('/') {
-        let skill = skills
-            .iter()
-            .find(|skill| skill.name == skill_name)
-            .ok_or_else(|| format!("Skill /{skill_name} not found"))?;
-        println!("{}", skill.body);
-        return Ok(());
-    }
-
     let base_url = env::var("OPENROUTER_BASE_URL")
         .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
 
@@ -115,11 +106,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "content": format!("You have access to the following skills:\n\n{skill_list}")
     }));
 
-    messages.push(json!({
-            "role": "user",
-            "content": args.prompt
-        }
-    ));
+    if let Some(skill_name) = args.prompt.trim().strip_prefix('/') {
+        let skill = skills
+            .iter()
+            .find(|skill| skill.name == skill_name)
+            .ok_or_else(|| format!("Skill /{skill_name} not found"))?;
+        messages.push(json!({
+                "role": "user",
+                "content": skill.body
+            }
+        ));
+    } else {
+        messages.push(json!({
+                "role": "user",
+                "content": args.prompt
+            }
+        ));
+    }
+
     for _ in 0..10 {
         #[allow(unused_variables)]
         let response: Value = client
