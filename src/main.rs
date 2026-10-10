@@ -88,7 +88,10 @@ fn render_skill_body(body: &str, arguments: &str) -> String {
     rendered.replace("$ARGUMENTS", &full_arguments)
 }
 
-fn render_skills(prompt: &str, skills: &[Skill]) -> Result<String, Box<dyn std::error::Error>> {
+fn render_skills(
+    prompt: &str,
+    skills: &[Skill],
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut commands: Vec<(&str, Vec<&str>)> = Vec::new();
 
     for token in prompt.split_whitespace() {
@@ -111,7 +114,7 @@ fn render_skills(prompt: &str, skills: &[Skill]) -> Result<String, Box<dyn std::
         rendered_skills.push(render_skill_body(&skill.body, &arguments.join(" ")));
     }
 
-    Ok(rendered_skills.join("\n\n"))
+    Ok(rendered_skills)
 }
 
 #[tokio::main]
@@ -146,11 +149,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
 
     if args.prompt.trim().starts_with('/') {
-        messages.push(json!({
+        for skill_body in render_skills(&args.prompt, &skills)? {
+            messages.push(json!({
                 "role": "user",
-                "content": render_skills(&args.prompt, &skills)?
-            }
-        ));
+                "content": skill_body
+            }));
+        }
     } else {
         messages.push(json!({
                 "role": "user",
