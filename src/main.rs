@@ -92,29 +92,33 @@ fn render_skills(
     prompt: &str,
     skills: &[Skill],
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut commands: Vec<(&str, Vec<&str>)> = Vec::new();
+    let tokens = prompt.split_whitespace().collect::<Vec<_>>();
+    let mut expanded_skills = Vec::new();
+    let mut argument_start = 0;
 
-    for token in prompt.split_whitespace() {
-        if let Some(skill_name) = token.strip_prefix('/') {
-            if skill_name.is_empty() {
-                return Err("Skill command cannot be empty".into());
-            }
-            commands.push((skill_name, Vec::new()));
-        } else if let Some((_, arguments)) = commands.last_mut() {
-            arguments.push(token);
-        }
+    for (index, token) in tokens.iter().enumerate() {
+        let Some(skill_name) = token.strip_prefix('/') else {
+            break;
+        };
+
+        let Some(skill) = skills.iter().find(|skill| skill.name == skill_name) else {
+            break;
+        };
+
+        expanded_skills.push(skill);
+        argument_start = index + 1;
     }
 
-    let mut rendered_skills = Vec::new();
-    for (skill_name, arguments) in commands {
-        let skill = skills
-            .iter()
-            .find(|skill| skill.name == skill_name)
-            .ok_or_else(|| format!("Skill /{skill_name} not found"))?;
-        rendered_skills.push(render_skill_body(&skill.body, &arguments.join(" ")));
+    if expanded_skills.is_empty() {
+        return Err(format!("Skill {} not found", tokens.first().unwrap_or(&"/")).into());
     }
 
-    Ok(rendered_skills)
+    let arguments = tokens[argument_start..].join(" ");
+
+    Ok(expanded_skills
+        .into_iter()
+        .map(|skill| render_skill_body(&skill.body, &arguments))
+        .collect())
 }
 
 #[tokio::main]
