@@ -88,6 +88,32 @@ fn render_skill_body(body: &str, arguments: &str) -> String {
     rendered.replace("$ARGUMENTS", &full_arguments)
 }
 
+fn render_skills(prompt: &str, skills: &[Skill]) -> Result<String, Box<dyn std::error::Error>> {
+    let mut commands: Vec<(&str, Vec<&str>)> = Vec::new();
+
+    for token in prompt.split_whitespace() {
+        if let Some(skill_name) = token.strip_prefix('/') {
+            if skill_name.is_empty() {
+                return Err("Skill command cannot be empty".into());
+            }
+            commands.push((skill_name, Vec::new()));
+        } else if let Some((_, arguments)) = commands.last_mut() {
+            arguments.push(token);
+        }
+    }
+
+    let mut rendered_skills = Vec::new();
+    for (skill_name, arguments) in commands {
+        let skill = skills
+            .iter()
+            .find(|skill| skill.name == skill_name)
+            .ok_or_else(|| format!("Skill /{skill_name} not found"))?;
+        rendered_skills.push(render_skill_body(&skill.body, &arguments.join(" ")));
+    }
+
+    Ok(rendered_skills.join("\n\n"))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -119,18 +145,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "content": format!("You have access to the following skills:\n\n{skill_list}")
     }));
 
-    if let Some(command) = args.prompt.trim().strip_prefix('/') {
-        let (skill_name, skill_arguments) = command
-            .split_once(char::is_whitespace)
-            .map(|(name, arguments)| (name, arguments.trim()))
-            .unwrap_or((command, ""));
-        let skill = skills
-            .iter()
-            .find(|skill| skill.name == skill_name)
-            .ok_or_else(|| format!("Skill /{skill_name} not found"))?;
+    if args.prompt.trim().starts_with('/') {
         messages.push(json!({
                 "role": "user",
-                "content": render_skill_body(&skill.body, skill_arguments)
+                "content": render_skills(&args.prompt, &skills)?
             }
         ));
     } else {
