@@ -75,6 +75,19 @@ fn load_skills() -> Result<Vec<Skill>, Box<dyn std::error::Error>> {
     Ok(skills)
 }
 
+fn render_skill_body(body: &str, arguments: &str) -> String {
+    let positional_arguments = arguments.split_whitespace().collect::<Vec<_>>();
+    let full_arguments = positional_arguments.join(" ");
+    let mut rendered = body.to_string();
+
+    for (index, argument) in positional_arguments.iter().enumerate().rev() {
+        rendered = rendered.replace(&format!("$ARGUMENTS[{index}]"), argument);
+        rendered = rendered.replace(&format!("${index}"), argument);
+    }
+
+    rendered.replace("$ARGUMENTS", &full_arguments)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -117,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or_else(|| format!("Skill /{skill_name} not found"))?;
         messages.push(json!({
                 "role": "user",
-                "content": skill.body.replace("$ARGUMENTS", skill_arguments)
+                "content": render_skill_body(&skill.body, skill_arguments)
             }
         ));
     } else {
