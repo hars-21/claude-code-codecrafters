@@ -106,14 +106,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "content": format!("You have access to the following skills:\n\n{skill_list}")
     }));
 
-    if let Some(skill_name) = args.prompt.trim().strip_prefix('/') {
+    if let Some(command) = args.prompt.trim().strip_prefix('/') {
+        let (skill_name, skill_arguments) = command
+            .split_once(char::is_whitespace)
+            .map(|(name, arguments)| (name, arguments.trim()))
+            .unwrap_or((command, ""));
         let skill = skills
             .iter()
             .find(|skill| skill.name == skill_name)
             .ok_or_else(|| format!("Skill /{skill_name} not found"))?;
         messages.push(json!({
                 "role": "user",
-                "content": skill.body
+                "content": skill.body.replace("$ARGUMENTS", skill_arguments)
             }
         ));
     } else {
