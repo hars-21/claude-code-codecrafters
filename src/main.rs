@@ -17,6 +17,7 @@ struct Args {
 struct Skill {
     name: String,
     description: String,
+    context: Option<String>,
     #[serde(skip)]
     body: String,
 }
@@ -88,10 +89,31 @@ fn render_skill_body(body: &str, arguments: &str) -> String {
     rendered.replace("$ARGUMENTS", &full_arguments)
 }
 
-fn render_skills(
+async fn run_subagent(
+    client: &Client<OpenAIConfig>,
     prompt: &str,
-    skills: &[Skill],
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error>> {
+    let response: Value = client
+        .chat()
+        .create_byot(json!({
+            "model": "anthropic/claude-haiku-4.5",
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
+        }))
+        .await?;
+
+    response["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "Subagent did not return a response".into())
+}
+
+fn render_skills<'a>(
+    prompt: &str,
+    skills: &'a [Skill],
+) -> Result<Vec<(&'a Skill, String)>, Box<dyn std::error::Error>> {
     let tokens = prompt.split_whitespace().collect::<Vec<_>>();
     let mut expanded_skills = Vec::new();
     let mut argument_start = 0;
@@ -117,7 +139,7 @@ fn render_skills(
 
     Ok(expanded_skills
         .into_iter()
-        .map(|skill| render_skill_body(&skill.body, &arguments))
+        .map(|skill| (skill, render_skill_body(&skill.body, &arguments)))
         .collect())
 }
 
@@ -155,10 +177,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
 
     if args.prompt.trim().starts_with('/') {
-        for skill_body in render_skills(&args.prompt, &skills)? {
+        for (skill, skill_body) in render_skills(&args.prompt, &skills)? {
+            let content = if skill.context.as_deref() == Some("fork") {
+                run_subagent(&client, &skill_body).await?
+            } else {
+                skill_body
+            };
             messages.push(json!({
                 "role": "user",
-                "content": skill_body
+                "content": content
             }));
         }
     } else {
@@ -282,7 +309,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Value::String(skill_name) = &args["skill_name"] {
                         let arguments = args["arguments"].as_str().unwrap_or("");
                         let content = match skills.iter().find(|skill| skill.name == *skill_name) {
-                            Some(skill) => render_skill_body(&skill.body, arguments),
+                            Some(skill) => {
+                                let body = render_skill_body(&skill.body, arguments);
+                                if skill.context.as_deref() == Some("fork") {
+                                    run_subagent(&client, &body).await?
+                                } else {
+                                    body
+                                }
+                            }
                             None => format!("Skill /{skill_name} not found"),
                         };
                         messages.push(json!({
