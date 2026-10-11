@@ -149,7 +149,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     messages.push(json!({
         "role": "system",
-        "content": format!("You have access to the following skills:\n\n{skill_list}")
+        "content": format!(
+            "You have access to the following skills. Use the Skill tool when a skill's description applies to the user's request.\n\n{skill_list}"
+        )
     }));
 
     if args.prompt.trim().starts_with('/') {
@@ -175,6 +177,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "model": "anthropic/claude-haiku-4.5",
                     "messages": messages,
                     "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "Skill",
+                            "description": "Load the full instructions for a skill when its description applies to the user's request.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "skill_name": {
+                                        "type": "string",
+                                        "description": "The name of the skill to invoke"
+                                    },
+                                    "arguments": {
+                                        "type": "string",
+                                        "description": "Optional arguments to pass to the skill"
+                                    }
+                                },
+                                "required": ["skill_name"]
+                            }
+                        }
+                    },
                     {
                         "type": "function",
                         "function": {
@@ -255,6 +278,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => panic!("Invalid arguments"),
             };
             match tool.as_str() {
+                "Skill" => {
+                    if let Value::String(skill_name) = &args["skill_name"] {
+                        let arguments = args["arguments"].as_str().unwrap_or("");
+                        let content = match skills.iter().find(|skill| skill.name == *skill_name) {
+                            Some(skill) => render_skill_body(&skill.body, arguments),
+                            None => format!("Skill /{skill_name} not found"),
+                        };
+                        messages.push(json!({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": content,
+                        }));
+                    } else {
+                        panic!("skill_name must be a string")
+                    }
+                }
+
                 "Read" => {
                     if let Value::String(path) = &args["file_path"] {
                         let content = fs::read_to_string(path).unwrap();
