@@ -288,29 +288,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             && !tools.is_empty()
         {
             messages.push(response["choices"][0]["message"].clone());
-            let tool_call = match &tools[0]["function"] {
-                Value::Object(tool) => tool,
-                _ => panic!("Invalid tool call"),
+            let tool_call_id = tools[0]["id"]
+                .as_str()
+                .ok_or("Tool call id must be a string")?;
+            let tool = tools[0]["function"]["name"]
+                .as_str()
+                .ok_or("Tool name must be a string")?;
+            let args = match tools[0]["function"]["arguments"].as_str() {
+                Some(raw) => match serde_json::from_str::<Value>(raw) {
+                    Ok(args) => args,
+                    Err(error) => {
+                        messages.push(json!({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": format!("Invalid tool arguments: {error}"),
+                        }));
+                        continue;
+                    }
+                },
+                None => {
+                    messages.push(json!({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": "Invalid tool arguments: expected a JSON string",
+                    }));
+                    continue;
+                }
             };
-            let tool_call_id = match &tools[0]["id"] {
-                Value::String(id) => id,
-                _ => panic!("Tool call id not provided or not string"),
-            };
-            let tool = match &tool_call["name"] {
-                Value::String(name) => name,
-                _ => panic!("Tool name must be a string"),
-            };
-            let args: Value = match &tool_call["arguments"] {
-                Value::String(raw) => serde_json::from_str(raw.as_str()).unwrap(),
-                _ => panic!("Invalid arguments"),
-            };
-            match tool.as_str() {
-                "Skill" => {
-                    if let Value::String(skill_name) = &args["skill_name"] {
-                        let arguments = args["arguments"].as_str().unwrap_or("");
-                        let content = match skills.iter().find(|skill| skill.name == *skill_name) {
+
+            let content = match tool {
+                "Skill" => match args["skill_name"].as_str() {
+                    Some(skill_name) => {
+                        match skills.iter().find(|skill| skill.name == skill_name) {
                             Some(skill) => {
-                                let body = render_skill_body(&skill.body, arguments);
+                                let body = render_skill_body(
+                                    &skill.body,
+                                    args["arguments"].as_str().unwrap_or(""),
+                                );
                                 if skill.context.as_deref() == Some("fork") {
                                     run_subagent(&client, &body).await?
                                 } else {
@@ -318,88 +332,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                             None => format!("Skill /{skill_name} not found"),
-                        };
-                        messages.push(json!({
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "content": content,
-                        }));
-                    } else {
-                        panic!("skill_name must be a string")
-                    }
-                }
-
-                "Read" => {
-                    if let Value::String(path) = &args["file_path"] {
-                        let content = fs::read_to_string(path).unwrap();
-                        messages.push(json!({
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "content": content,
-                        }))
-                    } else {
-                        panic!("file_path must be a string")
-                    }
-                }
-
-                "Write" => {
-                    if let (Value::String(path), Value::String(content)) =
-                        (&args["file_path"], &args["content"])
-                    {
-                        std::fs::write(path, content)?;
-                        messages.push(json!({
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "content": format!("Successfully write {} to {}", content, path)
-                        }));
-                    } else {
-                        panic!("file_path and content must be strings")
-                    }
-                }
-
-                "Bash" => {
-                    if let Value::String(command) = &args["command"] {
-                        if command.trim().is_empty() {
-                            messages.push(json!({
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "content": "There is no command to execute!!!"
-                            }));
-                            // Skip execution for empty command
-                            continue;
                         }
-                        // Execute the command using a shell to support complex commands and quoting
-                        let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-                        let output = Command::new(shell)
+                    }
+                    None => "Invalid Skill arguments: skill_name must be a string".to_string(),
+                },
+                "Read" => match args["file_path"].as_str() {
+                    Some(path) => fs::read_to_string(path)
+                        .unwrap_or_else(|error| format!("Error reading {path}: {error}")),
+                    None => "Invalid Read arguments: file_path must be a string".to_string(),
+                },
+                "Write" => match (args["file_path"].as_str(), args["content"].as_str()) {
+                    (Some(path), Some(file_content)) => match fs::write(path, file_content) {
+                        Ok(()) => format!("Successfully wrote {path}"),
+                        Err(error) => format!("Error writing {path}: {error}"),
+                    },
+                    _ => {
+                        "Invalid Write arguments: file_path and content must be strings".to_string()
+                    }
+                },
+                "Bash" => match args["command"].as_str() {
+                    Some(command) if command.trim().is_empty() => {
+                        "There is no command to execute".to_string()
+                    }
+                    Some(command) => {
+                        let shell = env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+                        match Command::new(shell)
                             .arg("-c")
                             .arg(command)
                             .stdin(Stdio::null())
                             .stdout(Stdio::piped())
                             .stderr(Stdio::piped())
-                            .output()?;
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-
-                        if !stdout.trim().is_empty() {
-                            messages.push(json!({
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "content": stdout
-                            }));
-                        } else {
-                            let stderr = String::from_utf8_lossy(&output.stderr);
-                            messages.push(json!({
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "content": stderr
-                            }));
+                            .output()
+                        {
+                            Ok(output) if !output.stdout.is_empty() => {
+                                String::from_utf8_lossy(&output.stdout).into_owned()
+                            }
+                            Ok(output) => String::from_utf8_lossy(&output.stderr).into_owned(),
+                            Err(error) => format!("Error running command: {error}"),
                         }
-                    } else {
-                        panic!("command must be a string")
                     }
-                }
-
-                _ => panic!("Tool not implemented"),
+                    None => "Invalid Bash arguments: command must be a string".to_string(),
+                },
+                _ => format!("Unknown tool: {tool}"),
             };
+
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": content,
+            }));
         } else {
             if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
                 println!("{}", content);
