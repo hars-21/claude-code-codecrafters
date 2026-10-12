@@ -92,22 +92,14 @@ fn render_skill_body(body: &str, arguments: &str) -> String {
 async fn run_subagent(
     client: &Client<OpenAIConfig>,
     prompt: &str,
+    skills: &[Skill],
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let response: Value = client
-        .chat()
-        .create_byot(json!({
-            "model": "anthropic/claude-haiku-4.5",
-            "messages": [{
-                "role": "user",
-                "content": prompt
-            }]
-        }))
-        .await?;
-
-    response["choices"][0]["message"]["content"]
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| "Subagent did not return a response".into())
+    Box::pin(run_agent(
+        client,
+        vec![json!({ "role": "user", "content": prompt })],
+        skills,
+    ))
+    .await
 }
 
 fn render_skills<'a>(
@@ -143,59 +135,11 @@ fn render_skills<'a>(
         .collect())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
-    let skills = load_skills()?;
-
-    let base_url = env::var("OPENROUTER_BASE_URL")
-        .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
-
-    let api_key = env::var("OPENROUTER_API_KEY").unwrap_or_else(|_| {
-        eprintln!("OPENROUTER_API_KEY is not set");
-        process::exit(1);
-    });
-
-    let config = OpenAIConfig::new()
-        .with_api_base(base_url)
-        .with_api_key(api_key);
-
-    let skill_list = skills
-        .iter()
-        .map(|skill| format!("- {}: {}\n", skill.name, skill.description))
-        .collect::<String>();
-
-    let client = Client::with_config(config);
-
-    let mut messages: Vec<Value> = Vec::new();
-
-    messages.push(json!({
-        "role": "system",
-        "content": format!(
-            "You have access to the following skills. Use the Skill tool when a skill's description applies to the user's request.\n\n{skill_list}"
-        )
-    }));
-
-    if args.prompt.trim().starts_with('/') {
-        for (skill, skill_body) in render_skills(&args.prompt, &skills)? {
-            let content = if skill.context.as_deref() == Some("fork") {
-                run_subagent(&client, &skill_body).await?
-            } else {
-                skill_body
-            };
-            messages.push(json!({
-                "role": "user",
-                "content": content
-            }));
-        }
-    } else {
-        messages.push(json!({
-                "role": "user",
-                "content": args.prompt
-            }
-        ));
-    }
-
+async fn run_agent(
+    client: &Client<OpenAIConfig>,
+    mut messages: Vec<Value>,
+    skills: &[Skill],
+) -> Result<String, Box<dyn std::error::Error>> {
     for _ in 0..10 {
         #[allow(unused_variables)]
         let response: Value = client
@@ -326,7 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     args["arguments"].as_str().unwrap_or(""),
                                 );
                                 if skill.context.as_deref() == Some("fork") {
-                                    run_subagent(&client, &body).await?
+                                    run_subagent(client, &body, skills).await?
                                 } else {
                                     body
                                 }
@@ -383,11 +327,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
         } else {
             if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
-                println!("{}", content);
-                break;
+                return Ok(content.to_string());
             }
+
+            return Err("Agent returned neither tool calls nor content".into());
         }
     }
 
+    Err("Agent reached the maximum of 10 tool iterations".into())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    let skills = load_skills()?;
+    let base_url = env::var("OPENROUTER_BASE_URL")
+        .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
+    let api_key = env::var("OPENROUTER_API_KEY").unwrap_or_else(|_| {
+        eprintln!("OPENROUTER_API_KEY is not set");
+        process::exit(1);
+    });
+    let client = Client::with_config(
+        OpenAIConfig::new()
+            .with_api_base(base_url)
+            .with_api_key(api_key),
+    );
+
+    let skill_list = skills
+        .iter()
+        .map(|skill| format!("- {}: {}\n", skill.name, skill.description))
+        .collect::<String>();
+    let mut messages = vec![json!({
+        "role": "system",
+        "content": format!(
+            "You have access to the following skills. Use the Skill tool when a skill's description applies to the user's request.\n\n{skill_list}"
+        )
+    })];
+
+    if args.prompt.trim().starts_with('/') {
+        for (skill, skill_body) in render_skills(&args.prompt, &skills)? {
+            let content = if skill.context.as_deref() == Some("fork") {
+                run_subagent(&client, &skill_body, &skills).await?
+            } else {
+                skill_body
+            };
+            messages.push(json!({ "role": "user", "content": content }));
+        }
+    } else {
+        messages.push(json!({ "role": "user", "content": args.prompt }));
+    }
+
+    println!("{}", run_agent(&client, messages, &skills).await?);
     Ok(())
 }
