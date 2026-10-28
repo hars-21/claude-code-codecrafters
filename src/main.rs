@@ -12,6 +12,8 @@ use std::{env, fs, process};
 struct Args {
     #[arg(short = 'p', long)]
     prompt: Option<String>,
+    #[arg(long, default_value = "anthropic/claude-haiku-4.5")]
+    model: String,
 }
 
 #[derive(Deserialize)]
@@ -94,11 +96,13 @@ async fn run_subagent(
     client: &Client<OpenAIConfig>,
     prompt: &str,
     skills: &[Skill],
+    model: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     Box::pin(run_agent(
         client,
         vec![json!({ "role": "user", "content": prompt })],
         skills,
+        model,
     ))
     .await
 }
@@ -140,13 +144,14 @@ async fn run_agent(
     client: &Client<OpenAIConfig>,
     mut messages: Vec<Value>,
     skills: &[Skill],
+    model: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     for _ in 0..10 {
         #[allow(unused_variables)]
         let response: Value = client
             .chat()
             .create_byot(json!({
-                    "model": "anthropic/claude-haiku-4.5",
+                    "model": model,
                     "messages": messages,
                     "tools": [
                     {
@@ -271,7 +276,7 @@ async fn run_agent(
                                     args["arguments"].as_str().unwrap_or(""),
                                 );
                                 if skill.context.as_deref() == Some("fork") {
-                                    run_subagent(client, &body, skills).await?
+                                    run_subagent(client, &body, skills, model).await?
                                 } else {
                                     body
                                 }
@@ -342,6 +347,7 @@ async fn run_prompt(
     prompt: &str,
     client: &Client<OpenAIConfig>,
     skills: &[Skill],
+    model: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let skill_list = skills
         .iter()
@@ -357,7 +363,7 @@ async fn run_prompt(
     if prompt.trim().starts_with('/') {
         for (skill, skill_body) in render_skills(prompt, skills)? {
             let content = if skill.context.as_deref() == Some("fork") {
-                run_subagent(client, &skill_body, skills).await?
+                run_subagent(client, &skill_body, skills, model).await?
             } else {
                 skill_body
             };
@@ -367,7 +373,7 @@ async fn run_prompt(
         messages.push(json!({ "role": "user", "content": prompt }));
     }
 
-    run_agent(client, messages, skills).await
+    run_agent(client, messages, skills, model).await
 }
 
 #[tokio::main]
@@ -387,9 +393,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     if let Some(prompt) = args.prompt {
-        println!("{}", run_prompt(&prompt, &client, &skills).await?);
+        println!(
+            "{}",
+            run_prompt(&prompt, &client, &skills, &args.model).await?
+        );
         return Ok(());
     }
+
+    let mut model = args.model;
 
     loop {
         print!("> ");
@@ -404,11 +415,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if prompt == "/exit" || prompt == "/quit" {
             break;
         }
+        if prompt == "/model" {
+            println!("Current model: {model}");
+            continue;
+        }
+        if let Some(new_model) = prompt.strip_prefix("/model ") {
+            model = new_model.trim().to_string();
+            println!("Using model: {model}");
+            continue;
+        }
         if prompt.is_empty() {
             continue;
         }
 
-        println!("{}", run_prompt(prompt, &client, &skills).await?);
+        println!("{}", run_prompt(prompt, &client, &skills, &model).await?);
     }
 
     Ok(())
