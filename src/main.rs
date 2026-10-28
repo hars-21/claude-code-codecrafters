@@ -2,6 +2,7 @@ use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::{env, fs, process};
@@ -10,7 +11,7 @@ use std::{env, fs, process};
 #[command(author, version, about)]
 struct Args {
     #[arg(short = 'p', long)]
-    prompt: String,
+    prompt: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -337,6 +338,38 @@ async fn run_agent(
     Err("Agent reached the maximum of 10 tool iterations".into())
 }
 
+async fn run_prompt(
+    prompt: &str,
+    client: &Client<OpenAIConfig>,
+    skills: &[Skill],
+) -> Result<String, Box<dyn std::error::Error>> {
+    let skill_list = skills
+        .iter()
+        .map(|skill| format!("- {}: {}\n", skill.name, skill.description))
+        .collect::<String>();
+    let mut messages = vec![json!({
+        "role": "system",
+        "content": format!(
+            "You have access to the following skills. Use the Skill tool when a skill's description applies to the user's request.\n\n{skill_list}"
+        )
+    })];
+
+    if prompt.trim().starts_with('/') {
+        for (skill, skill_body) in render_skills(prompt, skills)? {
+            let content = if skill.context.as_deref() == Some("fork") {
+                run_subagent(client, &skill_body, skills).await?
+            } else {
+                skill_body
+            };
+            messages.push(json!({ "role": "user", "content": content }));
+        }
+    } else {
+        messages.push(json!({ "role": "user", "content": prompt }));
+    }
+
+    run_agent(client, messages, skills).await
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -353,30 +386,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_api_key(api_key),
     );
 
-    let skill_list = skills
-        .iter()
-        .map(|skill| format!("- {}: {}\n", skill.name, skill.description))
-        .collect::<String>();
-    let mut messages = vec![json!({
-        "role": "system",
-        "content": format!(
-            "You have access to the following skills. Use the Skill tool when a skill's description applies to the user's request.\n\n{skill_list}"
-        )
-    })];
-
-    if args.prompt.trim().starts_with('/') {
-        for (skill, skill_body) in render_skills(&args.prompt, &skills)? {
-            let content = if skill.context.as_deref() == Some("fork") {
-                run_subagent(&client, &skill_body, &skills).await?
-            } else {
-                skill_body
-            };
-            messages.push(json!({ "role": "user", "content": content }));
-        }
-    } else {
-        messages.push(json!({ "role": "user", "content": args.prompt }));
+    if let Some(prompt) = args.prompt {
+        println!("{}", run_prompt(&prompt, &client, &skills).await?);
+        return Ok(());
     }
 
-    println!("{}", run_agent(&client, messages, &skills).await?);
+    loop {
+        print!("> ");
+        io::stdout().flush()?;
+
+        let mut prompt = String::new();
+        if io::stdin().read_line(&mut prompt)? == 0 {
+            break;
+        }
+
+        let prompt = prompt.trim();
+        if prompt == "/exit" || prompt == "/quit" {
+            break;
+        }
+        if prompt.is_empty() {
+            continue;
+        }
+
+        println!("{}", run_prompt(prompt, &client, &skills).await?);
+    }
+
     Ok(())
 }
