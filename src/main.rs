@@ -98,6 +98,7 @@ async fn run_subagent(
     skills: &[Skill],
     model: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    eprintln!("[subagent] starting with model {model}");
     Box::pin(run_agent(
         client,
         vec![json!({ "role": "user", "content": prompt })],
@@ -147,7 +148,6 @@ async fn run_agent(
     model: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     for _ in 0..10 {
-        #[allow(unused_variables)]
         let response: Value = client
             .chat()
             .create_byot(json!({
@@ -265,6 +265,8 @@ async fn run_agent(
                     continue;
                 }
             };
+
+            eprintln!("[agent] tool call: {tool} {args}");
 
             let content = match tool {
                 "Skill" => match args["skill_name"].as_str() {
