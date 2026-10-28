@@ -92,6 +92,19 @@ fn render_skill_body(body: &str, arguments: &str) -> String {
     rendered.replace("$ARGUMENTS", &full_arguments)
 }
 
+fn response_content(message: &Value) -> Option<String> {
+    if let Some(content) = message["content"].as_str() {
+        return Some(content.to_string());
+    }
+
+    message["content"].as_array().map(|blocks| {
+        blocks
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .collect()
+    })
+}
+
 async fn run_subagent(
     client: &Client<OpenAIConfig>,
     prompt: &str,
@@ -334,10 +347,11 @@ async fn run_agent(
                 "content": content,
             }));
         } else {
-            if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
-                return Ok(content.to_string());
+            if let Some(content) = response_content(&response["choices"][0]["message"]) {
+                return Ok(content);
             }
 
+            eprintln!("[agent] unexpected response: {response}");
             return Err("Agent returned neither tool calls nor content".into());
         }
     }
